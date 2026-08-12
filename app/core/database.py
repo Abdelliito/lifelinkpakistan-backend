@@ -1,9 +1,12 @@
+import logging
 from collections.abc import Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 connect_args = {"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
 
@@ -18,6 +21,16 @@ class Base(DeclarativeBase):
     pass
 
 
+def init_db() -> None:
+    """Create all tables. Logs a warning in production — prefer Alembic migrations."""
+    if settings.ENVIRONMENT.lower() == "production":
+        logger.warning(
+            "Running Base.metadata.create_all() in production. "
+            "Consider using 'alembic upgrade head' for schema migrations instead."
+        )
+    Base.metadata.create_all(bind=engine)
+
+
 def get_db() -> Generator:
     """FastAPI dependency that yields a database session and ensures it closes."""
     db = SessionLocal()
@@ -25,3 +38,4 @@ def get_db() -> Generator:
         yield db
     finally:
         db.close()
+

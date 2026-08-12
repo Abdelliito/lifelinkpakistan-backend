@@ -1,11 +1,5 @@
-"""
-GOOGLE GEMINI AI REQUEST ASSISTANT
--------------------------------------------------------------------------
-Extracts structured blood emergency details (blood group, city, hospital,
-urgency level) from freeform text using Google Gemini AI, with automatic
-deterministic fallback if API key is not configured or network calls fail.
-"""
-
+import json
+import logging
 import os
 import re
 
@@ -14,6 +8,8 @@ from fastapi import HTTPException, status
 from app.core.config import settings
 from app.models.enums import City
 from app.schemas.ai import AIExtractedRequest
+
+logger = logging.getLogger(__name__)
 
 _HOSPITAL_KEYWORDS = [
     "Mayo Hospital",
@@ -80,7 +76,7 @@ def _fallback_parse(trimmed: str) -> AIExtractedRequest:
             detail="AI could not extract any details from that description. Try including the blood group, hospital, and city.",
         )
 
-    return AIExtractedRequest(bloodGroup=blood_group, hospital=hospital, city=city, urgency=urgency)
+    return AIExtractedRequest(blood_group=blood_group, bloodGroup=blood_group, hospital=hospital, city=city, urgency=urgency)
 
 
 def parse_blood_request(text: str) -> AIExtractedRequest:
@@ -92,10 +88,16 @@ def parse_blood_request(text: str) -> AIExtractedRequest:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Could not understand the request. Please add a few more details.",
         )
+    if len(trimmed) > settings.AI_MAX_INPUT_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Request text is too long (max {settings.AI_MAX_INPUT_LENGTH} characters).",
+        )
 
     api_key = settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")
 
     if not api_key:
+        logger.warning("GEMINI_API_KEY is not set. Using local fallback parser.")
         return _fallback_parse(trimmed)
 
     try:
@@ -107,14 +109,14 @@ def parse_blood_request(text: str) -> AIExtractedRequest:
 "{trimmed}"
 
 Provide a JSON object with these EXACT keys:
-- "bloodGroup": Blood group string. Must be exactly one of: "A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", or "" if unknown.
+- "blood_group": Blood group string. Must be exactly one of: "A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", or "" if unknown.
 - "hospital": Name of the hospital (e.g., "Mayo Hospital", "Aga Khan Hospital", "PIMS Hospital") or "" if unknown.
 - "city": City in Pakistan. Must be one of: "Karachi", "Lahore", "Islamabad", "Rawalpindi", "Faisalabad", "Multan", "Peshawar", "Quetta", "Sialkot", "Hyderabad", or "" if unknown.
 - "urgency": Urgency level. Must be exactly one of: "Critical", "Urgent", "Normal". Default to "Normal" if not specified.
 """
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.1-flash-lite",
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -122,20 +124,37 @@ Provide a JSON object with these EXACT keys:
         )
 
         if response.text:
-            import json
-
             data = json.loads(response.text)
-            extracted = AIExtractedRequest(
-                bloodGroup=data.get("bloodGroup", "") or data.get("blood_group", ""),
-                hospital=data.get("hospital", ""),
-                city=data.get("city", ""),
-                urgency=data.get("urgency", "Normal"),
-            )
-            return extracted
+            blood_grp = data.get("blood_group") or data.get("bloodGroup") or ""
+            hosp = data.get("hospital") or ""
+            cty = data.get("city") or ""
+            urg = data.get("urgency") or "Normal"
 
+            return AIExtractedRequest(
+                blood_group=blood_grp,
+                bloodGroup=blood_grp,
+                hospital=hosp,
+                city=cty,
+                urgency=urg,
+            )
+
+        logger.warning("Gemini API returned an empty text payload. Falling back to local parser.")
         return _fallback_parse(trimmed)
-    except Exception:
-        # Fallback to regex parsing if external call fails
-        return _fallback_parse(trimmed)
+    except Exception as exc:
+        logger.error("Gemini AI extraction error: %s", exc, exc_info=True)
+        if isinstance(exc, HTTPException):
+            raise exc
+        # Don't leak internal error details to clients in production
+        is_prod = settings.ENVIRONMENT.lower() == "production"
+        detail = (
+            "AI processing is temporarily unavailable. Please try again later."
+            if is_prod
+            else f"Gemini AI processing failed: {str(exc)}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=detail,
+        )
+
 
 

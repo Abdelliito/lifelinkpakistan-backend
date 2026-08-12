@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AIParseRequest(BaseModel):
@@ -7,14 +7,22 @@ class AIParseRequest(BaseModel):
 
 class AIExtractedRequest(BaseModel):
     """
-    Structured fields extracted from free text. Mapped to camelCase for Next.js frontend compatibility.
+    Structured fields extracted from free text description of blood emergency.
+    Exposes both `blood_group` (snake_case) and `bloodGroup` (camelCase) for
+    backend API and Next.js frontend compatibility.
     """
 
-    bloodGroup: str = Field(default="", alias="blood_group")
+    blood_group: str = Field(default="")
+    bloodGroup: str = Field(default="")
     hospital: str = Field(default="")
     city: str = Field(default="")
     urgency: str = Field(default="")
 
-    class Config:
-        populate_by_name = True
+    @model_validator(mode="after")
+    def sync_blood_group_fields(self) -> "AIExtractedRequest":
+        val = self.blood_group or self.bloodGroup
+        self.blood_group = val
+        self.bloodGroup = val
+        return self
+
 

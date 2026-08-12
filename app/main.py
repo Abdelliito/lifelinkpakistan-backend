@@ -2,10 +2,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.core.database import Base, SessionLocal, engine
+from app.core.database import SessionLocal, init_db
+from app.core.rate_limit import limiter
 from app.db.seed import seed
 
 # Import models so they're registered on Base's metadata before create_all runs.
@@ -14,7 +17,7 @@ from app.models import BloodRequest, Donor, User  # noqa: F401
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    init_db()
     if settings.SEED_ON_STARTUP:
         db = SessionLocal()
         try:
@@ -24,12 +27,20 @@ async def lifespan(app: FastAPI):
     yield
 
 
+is_prod = settings.ENVIRONMENT.lower() == "production"
+
 app = FastAPI(
     title=settings.APP_NAME,
     description="Backend API for LifeLink Pakistan — AI-Assisted Blood Donor Network.",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None if is_prod else "/docs",
+    redoc_url=None if is_prod else "/redoc",
 )
+
+# Rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -50,3 +61,4 @@ def root() -> dict[str, str]:
 @app.get("/health", tags=["Health"])
 def health() -> dict[str, str]:
     return {"status": "healthy"}
+
