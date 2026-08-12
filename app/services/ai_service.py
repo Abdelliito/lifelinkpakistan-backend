@@ -1,21 +1,17 @@
 """
-SIMULATED AI REQUEST ASSISTANT
+GOOGLE GEMINI AI REQUEST ASSISTANT
 -------------------------------------------------------------------------
-This does NOT call Google Gemini or any external LLM. It performs
-lightweight, deterministic keyword/regex parsing over the input text to
-approximate what an AI extraction step would return, matching the
-behavior of the frontend's mock `ai.service.ts` exactly so both layers
-demo consistently.
-
-To integrate a real AI backend later, replace the body of
-`parse_blood_request` with a call to your provider of choice and keep
-the same `AIExtractedRequest` return shape.
+Extracts structured blood emergency details (blood group, city, hospital,
+urgency level) from freeform text using Google Gemini AI, with automatic
+deterministic fallback if API key is not configured or network calls fail.
 """
 
+import os
 import re
 
 from fastapi import HTTPException, status
 
+from app.core.config import settings
 from app.models.enums import City
 from app.schemas.ai import AIExtractedRequest
 
@@ -72,16 +68,7 @@ def _extract_urgency(text: str) -> str:
     return "Normal"
 
 
-def parse_blood_request(text: str) -> AIExtractedRequest:
-    trimmed = text.strip()
-    if not trimmed:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please describe the emergency first.")
-    if len(trimmed) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Could not understand the request. Please add a few more details.",
-        )
-
+def _fallback_parse(trimmed: str) -> AIExtractedRequest:
     blood_group = _extract_blood_group(trimmed)
     city = _extract_city(trimmed)
     hospital = _extract_hospital(trimmed)
@@ -93,4 +80,62 @@ def parse_blood_request(text: str) -> AIExtractedRequest:
             detail="AI could not extract any details from that description. Try including the blood group, hospital, and city.",
         )
 
-    return AIExtractedRequest(blood_group=blood_group, hospital=hospital, city=city, urgency=urgency)
+    return AIExtractedRequest(bloodGroup=blood_group, hospital=hospital, city=city, urgency=urgency)
+
+
+def parse_blood_request(text: str) -> AIExtractedRequest:
+    trimmed = text.strip()
+    if not trimmed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please describe the emergency first.")
+    if len(trimmed) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not understand the request. Please add a few more details.",
+        )
+
+    api_key = settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")
+
+    if not api_key:
+        return _fallback_parse(trimmed)
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+        prompt = f"""You are a medical assistant for LifeLink Pakistan. Extract details from this emergency blood request:
+"{trimmed}"
+
+Provide a JSON object with these EXACT keys:
+- "bloodGroup": Blood group string. Must be exactly one of: "A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", or "" if unknown.
+- "hospital": Name of the hospital (e.g., "Mayo Hospital", "Aga Khan Hospital", "PIMS Hospital") or "" if unknown.
+- "city": City in Pakistan. Must be one of: "Karachi", "Lahore", "Islamabad", "Rawalpindi", "Faisalabad", "Multan", "Peshawar", "Quetta", "Sialkot", "Hyderabad", or "" if unknown.
+- "urgency": Urgency level. Must be exactly one of: "Critical", "Urgent", "Normal". Default to "Normal" if not specified.
+"""
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
+        )
+
+        if response.text:
+            import json
+
+            data = json.loads(response.text)
+            extracted = AIExtractedRequest(
+                bloodGroup=data.get("bloodGroup", "") or data.get("blood_group", ""),
+                hospital=data.get("hospital", ""),
+                city=data.get("city", ""),
+                urgency=data.get("urgency", "Normal"),
+            )
+            return extracted
+
+        return _fallback_parse(trimmed)
+    except Exception:
+        # Fallback to regex parsing if external call fails
+        return _fallback_parse(trimmed)
+
+

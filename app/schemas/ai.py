@@ -7,13 +7,14 @@ class AIParseRequest(BaseModel):
 
 class AIExtractedRequest(BaseModel):
     """
-    Structured fields extracted from free text. Fields are returned as
-    plain strings (rather than enums) because extraction may be partial —
-    the frontend is responsible for populating an editable form and
-    letting the user confirm/correct every value before submission.
+    Structured fields extracted from free text. Mapped to camelCase for Next.js frontend compatibility.
     """
 
-    blood_group: str = ""
-    hospital: str = ""
-    city: str = ""
-    urgency: str = ""
+    bloodGroup: str = Field(default="", alias="blood_group")
+    hospital: str = Field(default="")
+    city: str = Field(default="")
+    urgency: str = Field(default="")
+
+    class Config:
+        populate_by_name = True
+

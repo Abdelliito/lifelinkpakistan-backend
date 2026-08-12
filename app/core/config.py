@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Seeding
     SEED_ON_STARTUP: bool = True
 
+    # AI / Gemini
+    GEMINI_API_KEY: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
